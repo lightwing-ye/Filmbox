@@ -101,11 +101,21 @@ object LutEffect {
         return size to bmp
     }
 
-    /** 胶片 id → 内置 LUT（没有对应 LUT 的卷返回 null）。 */
-    fun assetFor(filmId: String): String? =
-        if (filmId in LUT_IDS) "luts/$filmId.lut" else null
+    /** 一条滤镜的解析结果：资产路径 + 是否为近似映射。 */
+    data class LutRef(val asset: String, val approx: Boolean)
 
-    private val LUT_IDS = setOf(
+    /**
+     * 胶片 id → LUT。
+     * 精确条目直接用同名资产；`ALIAS` 里的是同族近似（电影卷 ↔ CineStill、Foma ↔ Ilford），
+     * UI 必须标注「近似」，不能当成该卷的真实色彩。
+     */
+    fun lutFor(filmId: String): LutRef? {
+        if (filmId in EXACT) return LutRef("luts/$filmId.lut", false)
+        ALIAS[filmId]?.let { return LutRef("luts/$it.lut", true) }
+        return null
+    }
+
+    private val EXACT = setOf(
         "ilford_hp5", "ilford_fp4", "ilford_delta100", "ilford_delta400", "ilford_delta3200",
         "ilford_panf", "ilford_xp2",
         "kodak_trix", "kodak_tmax100", "kodak_tmax400", "kodak_ektar100",
@@ -113,5 +123,23 @@ object LutEffect {
         "kodak_doublex_5222", "kodak_ektachrome_100d",
         "cinestill_50d", "cinestill_400d", "cinestill_800t",
         "fuji_acros2", "fuji_superia400", "fuji_pro400h",
+    )
+
+    private val ALIAS = mapOf(
+        // CineStill 就是去掉 remjet 的 Vision3：50D↔50D、250D↔400D、500T↔800T
+        "kodak_vision3_50d" to "cinestill_50d",
+        "kodak_vision3_250d" to "cinestill_400d",
+        "kodak_vision3_500t" to "cinestill_800t",
+        "kodak_vision3_200t" to "cinestill_800t",
+        "kodak_vision3_500t_85b" to "cinestill_800t",
+        // Foma 无公开 LUT，按乳剂风格就近
+        "foma_100" to "ilford_fp4",
+        "foma_200" to "ilford_delta400",
+        "foma_400" to "ilford_hp5",
+        // Kentmere 是 Ilford 的平价线
+        "kentmere_100" to "ilford_fp4",
+        "kentmere_400" to "ilford_hp5",
+        // Fuji 消费彩负
+        "fuji_c200" to "fuji_superia400",
     )
 }

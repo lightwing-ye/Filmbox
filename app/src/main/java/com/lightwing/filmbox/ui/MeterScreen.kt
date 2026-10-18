@@ -146,13 +146,15 @@ fun MeterScreen() {
     }
 
     var lutNote by remember { mutableStateOf<String?>(null) }
+    var lutApprox by remember { mutableStateOf(false) }
     LaunchedEffect(film, previewView) {
+        val ref = LutEffect.lutFor(film.id)
+        lutApprox = ref?.approx == true
         previewView?.let { v ->
-            val asset = LutEffect.assetFor(film.id)
-            val fx = LutEffect.effectFor(context, asset)
+            val fx = LutEffect.effectFor(context, ref?.asset)
             LutEffect.apply(v, fx)
             lutNote = when {
-                asset == null -> null
+                ref == null -> null
                 fx == null -> "滤镜不可用：${LutEffect.lastError ?: "未知"}"
                 else -> null
             }
@@ -180,6 +182,7 @@ fun MeterScreen() {
     Column(Modifier.fillMaxSize().background(Bg)) {
         TopBar(
             film = film,
+            approxFilter = lutApprox,
             ev = evForSolve,
             converged = reading?.converged == true,
             calibrated = calibration.isCalibrated,
@@ -388,6 +391,7 @@ private fun ZoneOverlay(
 @Composable
 private fun TopBar(
     film: Film,
+    approxFilter: Boolean,
     ev: Double?,
     converged: Boolean,
     calibrated: Boolean,
@@ -405,7 +409,7 @@ private fun TopBar(
                     DataTier.MANUFACTURER -> "厂商数据"
                     DataTier.COMMUNITY -> "社区数据"
                     DataTier.APPROX -> "近似值"
-                },
+                } + if (approxFilter) " · 滤镜近似" else "",
                 color = Dim, fontSize = 11.sp,
             )
         }
