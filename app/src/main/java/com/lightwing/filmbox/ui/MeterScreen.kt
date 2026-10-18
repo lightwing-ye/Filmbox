@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.weight
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -204,14 +202,11 @@ private fun ReadoutBlock(
 
 @Composable
 private fun Pill(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Box(
-        modifier.height(44.dp).background(Color(0xFF1A1C20), androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-            .then(modifier),
-        contentAlignment = Alignment.Center,
+    androidx.compose.material3.OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
     ) {
-        androidx.compose.material3.TextButton(onClick = onClick) {
-            Text(text, color = Ink, fontSize = 14.sp)
-        }
+        Text(text, color = Ink, fontSize = 14.sp)
     }
 }
 
