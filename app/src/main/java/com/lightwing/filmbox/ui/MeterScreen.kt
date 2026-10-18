@@ -2,6 +2,7 @@ package com.lightwing.filmbox.ui
 
 import android.view.HapticFeedbackConstants
 import android.view.SurfaceView
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -496,6 +497,8 @@ private fun zoneGray(zone: Int): Color {
  * 曝光分区条：11 格线框色阶 + 顶部可滑动的小三角游标。
  * 只有被选中的测光点才会出现游标（1:1 对应）。
  */
+private val ROMAN = arrayOf("0", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
+
 @Composable
 private fun ZoneBar(
     points: List<MeterPoint>,
