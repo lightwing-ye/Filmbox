@@ -22,7 +22,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      # 不用 android-actions/setup-android：runner 预装的 sdkmanager 版本不匹配，
+      # 它的自动接受许可步骤会以 exit 1 失败。这里直接手动接受。
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMANAGER=$(ls "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
       # 不用 gradle wrapper（仓库里没有二进制 jar），直接让 action 装指定版本
       - uses: gradle/actions/setup-gradle@v4
