@@ -20,12 +20,12 @@ import java.util.concurrent.ConcurrentHashMap
 object LutEffect {
 
     private const val AGSL = """
-        uniform shader input;
+        uniform shader content;
         uniform shader lut;
         uniform float lutSize;
 
         half4 main(float2 coord) {
-            half4 src = input.eval(coord);
+            half4 src = content.eval(coord);
             float s = lutSize;
             float r = clamp(float(src.r), 0.0, 1.0) * (s - 1.0);
             float g = clamp(float(src.g), 0.0, 1.0) * (s - 1.0);
@@ -71,7 +71,7 @@ object LutEffect {
         val shader = RuntimeShader(AGSL)
         shader.setInputShader("lut", BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
         shader.setFloatUniform("lutSize", size.toFloat())
-        return RenderEffect.createRuntimeShaderEffect(shader, "input")
+        return RenderEffect.createRuntimeShaderEffect(shader, "content")
     }
 
     fun apply(view: TextureView, effect: RenderEffect?) {
@@ -80,37 +80,21 @@ object LutEffect {
         }
     }
 
-    /** 解析 .cube，返回 (N, 打包位图)。 */
+    /** 解析二进制 LUT（FLUT: magic + size + N³×3 bytes，红变化最快）。 */
     private fun loadCube(context: Context, asset: String): Pair<Int, Bitmap> {
-        val lines = context.assets.open(asset).bufferedReader().use { it.readLines() }
-        var size = 0
-        val values = ArrayList<Float>(33 * 33 * 33 * 3)
-        for (raw in lines) {
-            val line = raw.trim()
-            if (line.isEmpty() || line.startsWith("#")) continue
-            if (line.startsWith("LUT_3D_SIZE")) {
-                size = line.substringAfter("LUT_3D_SIZE").trim().toInt()
-                continue
-            }
-            if (line[0].isLetter()) continue // TITLE / DOMAIN_MIN 等
-            val parts = line.split(Regex("\\s+"))
-            if (parts.size >= 3) {
-                values += parts[0].toFloatOrNull() ?: continue
-                values += parts[1].toFloatOrNull() ?: continue
-                values += parts[2].toFloatOrNull() ?: continue
-            }
-        }
-        require(size > 0) { "LUT 缺少 LUT_3D_SIZE: $asset" }
-        require(values.size == size * size * size * 3) { "LUT 数据长度不符: $asset" }
+        val bytes = context.assets.open(asset).use { it.readBytes() }
+        require(bytes.size >= 8 && String(bytes, 0, 4, Charsets.US_ASCII) == "FLUT") { "LUT 头无效: $asset" }
+        val size = bytes[4].toInt() and 0xFF
+        require(bytes.size == 8 + size * size * size * 3) { "LUT 长度不符: $asset" }
 
         val bmp = Bitmap.createBitmap(size, size * size, Bitmap.Config.ARGB_8888)
         val pixels = IntArray(size * size * size)
-        // .cube 顺序：红变化最快
+        var o = 8
         for (b in 0 until size) for (g in 0 until size) for (r in 0 until size) {
-            val idx = ((b * size + g) * size + r) * 3
-            val rr = (values[idx] * 255f).toInt().coerceIn(0, 255)
-            val gg = (values[idx + 1] * 255f).toInt().coerceIn(0, 255)
-            val bb = (values[idx + 2] * 255f).toInt().coerceIn(0, 255)
+            val rr = bytes[o].toInt() and 0xFF
+            val gg = bytes[o + 1].toInt() and 0xFF
+            val bb = bytes[o + 2].toInt() and 0xFF
+            o += 3
             pixels[b * size * size + g * size + r] = (0xFF shl 24) or (rr shl 16) or (gg shl 8) or bb
         }
         bmp.setPixels(pixels, 0, size, 0, 0, size, size * size)
@@ -119,12 +103,15 @@ object LutEffect {
 
     /** 胶片 id → 内置 LUT（没有对应 LUT 的卷返回 null）。 */
     fun assetFor(filmId: String): String? =
-        if (filmId in LUT_IDS) "luts/$filmId.cube" else null
+        if (filmId in LUT_IDS) "luts/$filmId.lut" else null
 
     private val LUT_IDS = setOf(
         "ilford_hp5", "ilford_fp4", "ilford_delta100", "ilford_delta400", "ilford_delta3200",
-        "ilford_panf", "ilford_xp2", "kodak_trix", "kodak_ektar100",
-        "kodak_portra160", "kodak_portra400", "kodak_portra800",
-        "fuji_acros2", "fuji_superia400",
+        "ilford_panf", "ilford_xp2",
+        "kodak_trix", "kodak_tmax100", "kodak_tmax400", "kodak_ektar100",
+        "kodak_portra160", "kodak_portra400", "kodak_gold200", "kodak_ultramax400",
+        "kodak_doublex_5222", "kodak_ektachrome_100d",
+        "cinestill_50d", "cinestill_400d", "cinestill_800t",
+        "fuji_acros2", "fuji_superia400", "fuji_pro400h",
     )
 }

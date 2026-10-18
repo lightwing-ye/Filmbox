@@ -33,3 +33,8 @@ core-math/        纯 Kotlin：Metering / Reciprocity / ExposureSolver / FilmCat
 app/              Compose UI + Camera2（camera/CameraMeter.kt）
 docs/PLAN.md      规划与决策记录（D1–D7）
 ```
+
+## 胶片滤镜数据
+
+`app/src/main/assets/luts/` 内的 LUT 由 **GlassMeter film looks**（CC-BY-4.0，https://github.com/TrondW/glassmeter-film-looks）
+的 33³ `.cube` 转换而来，仅做格式转换，详见该目录的 `NOTICE.md`。
