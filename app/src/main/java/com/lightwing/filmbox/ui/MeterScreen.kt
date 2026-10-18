@@ -220,14 +220,25 @@ fun MeterScreen() {
                 },
             )
 
+            // 每个测光点的分区位置用弹簧动画过渡，避免切换锚点时硬跳
+            val zones: List<Float> = points.map { p ->
+                androidx.compose.runtime.key(p.id) {
+                    animateFloatAsState(
+                        targetValue = zoneOf(p.stops ?: 0.0).coerceIn(0.0, 10.0).toFloat(),
+                        animationSpec = spring(dampingRatio = 0.78f, stiffness = 520f),
+                        label = "zone${p.id}",
+                    ).value
+                }
+            }
+
             if (mode == MeterMode.SPOT) {
                 SpotRing(spotX, spotY, spotDeg, boxW, boxH)
             }
-            ZoneOverlay(points, boxW, boxH, barHeightPx, padPx, zoneOf)
+            ZoneOverlay(points, zones, boxW, boxH, barHeightPx, padPx)
             ZoneBar(
                 points = points,
+                zones = zones,
                 selectedId = anchorId,
-                zoneOf = zoneOf,
                 modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
             )
         }
@@ -315,25 +326,27 @@ private fun spotRadius(deg: Float): Float = (deg / 70f / 2f).coerceIn(0.005f, 0.
 /** 点测圈：圈外压暗，圈内保持原亮度。 */
 @Composable
 private fun SpotRing(spotX: Float, spotY: Float, deg: Float, boxW: Float, boxH: Float) {
-    Canvas(Modifier.fillMaxSize()) {
-        val c = Offset(spotX * boxW, spotY * boxH)
-        val r = (spotRadius(deg) * boxW).coerceAtLeast(18f)
+    val ax by animateFloatAsState(spotX, spring(dampingRatio = 0.75f, stiffness = 600f), label = "spotX")
+    val ay by animateFloatAsState(spotY, spring(dampingRatio = 0.75f, stiffness = 600f), label = "spotY")
+    val ar by animateFloatAsState(spotRadius(deg), tween(180), label = "spotR")
 
-        // 圈外压暗（EvenOdd 挖洞）
+    Canvas(Modifier.fillMaxSize()) {
+        val c = Offset(ax * boxW, ay * boxH)
+        val r = (ar * boxW).coerceAtLeast(18f)
+
         val scrim = Path().apply {
             fillType = PathFillType.EvenOdd
             addRect(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
             addOval(androidx.compose.ui.geometry.Rect(c.x - r, c.y - r, c.x + r, c.y + r))
         }
-        drawPath(scrim, Color(0x59000000))
+        drawPath(scrim, Color(0x66000000))
 
         drawCircle(Color.White, radius = r, center = c, style = Stroke(2.5f))
-        drawCircle(Color(0x88FFFFFF), radius = r + 6f, center = c, style = Stroke(1f))
-        // 十字刻度
-        drawLine(Color.White, Offset(c.x - r * 1.7f, c.y), Offset(c.x - r * 1.1f, c.y), 2f)
-        drawLine(Color.White, Offset(c.x + r * 1.1f, c.y), Offset(c.x + r * 1.7f, c.y), 2f)
-        drawLine(Color.White, Offset(c.x, c.y - r * 1.7f), Offset(c.x, c.y - r * 1.1f), 2f)
-        drawLine(Color.White, Offset(c.x, c.y + r * 1.1f), Offset(c.x, c.y + r * 1.7f), 2f)
+        drawCircle(Color(0x66FFFFFF), radius = r + 7f, center = c, style = Stroke(1f))
+        drawLine(Color.White, Offset(c.x - r * 1.75f, c.y), Offset(c.x - r * 1.12f, c.y), 2f)
+        drawLine(Color.White, Offset(c.x + r * 1.12f, c.y), Offset(c.x + r * 1.75f, c.y), 2f)
+        drawLine(Color.White, Offset(c.x, c.y - r * 1.75f), Offset(c.x, c.y - r * 1.12f), 2f)
+        drawLine(Color.White, Offset(c.x, c.y + r * 1.12f), Offset(c.x, c.y + r * 1.75f), 2f)
     }
 }
 
@@ -341,15 +354,15 @@ private fun SpotRing(spotX: Float, spotY: Float, deg: Float, boxW: Float, boxH: 
 @Composable
 private fun ZoneOverlay(
     points: List<MeterPoint>,
+    zones: List<Float>,
     boxW: Float,
     boxH: Float,
     barHeightPx: Float,
     padPx: Float,
-    zoneOf: (Double) -> Double,
 ) {
     val reveal by animateFloatAsState(
         targetValue = points.size.toFloat(),
-        animationSpec = tween(380),
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = 500f),
         label = "reveal",
     )
     if (points.isEmpty()) return
@@ -357,28 +370,27 @@ private fun ZoneOverlay(
 
     Canvas(Modifier.fillMaxSize()) {
         val barTop = boxH - barHeightPx
-        val usable = boxW - padPx * 2
+        val cellW = (boxW - padPx * 2) / 11f
         points.forEachIndexed { i, p ->
             val progress = (reveal - i).coerceIn(0f, 1f)
             if (progress <= 0f) return@forEachIndexed
-            val zone = zoneOf(p.stops ?: 0.0).coerceIn(0.0, 10.0).toFloat()
-            val target = Offset(padPx + usable * zone / 10f, barTop + 6f)
+            val zone = zones.getOrElse(i) { 5f }
+            val target = Offset(padPx + cellW * zone + cellW / 2f, barTop + 4f)
             val start = Offset(p.x * boxW, p.y * boxH)
-            val end = Offset(
-                start.x + (target.x - start.x) * progress,
-                start.y + (target.y - start.y) * progress,
-            )
             drawPath(
-                Path().apply { moveTo(start.x, start.y); lineTo(end.x, end.y) },
-                color = Accent.copy(alpha = 0.55f),
-                style = Stroke(width = 1.6f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f))),
+                Path().apply {
+                    moveTo(start.x, start.y)
+                    lineTo(start.x + (target.x - start.x) * progress, start.y + (target.y - start.y) * progress)
+                },
+                color = Accent.copy(alpha = 0.5f * progress),
+                style = Stroke(width = 1.6f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 7f))),
             )
-            // 点位：实心圆 + 序号
-            drawCircle(Color(0xCC0B0C0E), radius = 15f, center = start)
-            drawCircle(Accent, radius = 15f, center = start, style = Stroke(2.5f))
+            val r = 16f * progress
+            drawCircle(Color(0xD90B0C0E), radius = r, center = start)
+            drawCircle(Accent.copy(alpha = progress), radius = r, center = start, style = Stroke(2.5f))
             val label = measurer.measure(
                 "${i + 1}",
-                TextStyle(fontSize = 12.sp, color = Accent, fontWeight = FontWeight.Bold),
+                TextStyle(fontSize = 12.sp, color = Accent.copy(alpha = progress), fontWeight = FontWeight.Bold),
             )
             drawText(
                 label,
@@ -398,36 +410,55 @@ private fun TopBar(
     onFilmClick: () -> Unit,
     onCalibrate: () -> Unit,
 ) {
+    val evShown by animateFloatAsState(
+        targetValue = (ev ?: 0.0).toFloat(),
+        animationSpec = tween(160),
+        label = "ev",
+    )
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f).clickable { onFilmClick() }) {
-            Text(film.label, color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text(film.label, color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(2.dp))
             Text(
                 "ISO ${film.iso} · " + when (film.tier) {
                     DataTier.MANUFACTURER -> "厂商数据"
                     DataTier.COMMUNITY -> "社区数据"
                     DataTier.APPROX -> "近似值"
                 } + if (approxFilter) " · 滤镜近似" else "",
-                color = Dim, fontSize = 11.sp,
+                color = Dim, fontSize = 10.sp,
             )
         }
-        Column(
-            Modifier.padding(end = 12.dp).clickable { onCalibrate() },
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text("校准", color = if (calibrated) Accent else Dim, fontSize = 12.sp)
-            Text(if (calibrated) "已校" else "未校", color = Dim, fontSize = 9.sp)
-        }
+        CalibrationChip(calibrated, onCalibrate)
+        Spacer(Modifier.width(10.dp))
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                ev?.let { String.format("%.1f", it) } ?: "—",
+                if (ev == null) "—" else String.format("%.1f", evShown),
                 color = if (converged) Ink else Dim,
-                fontSize = 30.sp, fontWeight = FontWeight.SemiBold,
+                fontSize = 38.sp,
+                fontWeight = FontWeight.Light,
+                style = TextStyle(fontFeatureSettings = "tnum"),
             )
-            Text("EV100", color = Dim, fontSize = 10.sp)
+            Text("EV100", color = Dim, fontSize = 9.sp, letterSpacing = 1.2.sp)
         }
+    }
+}
+
+@Composable
+private fun CalibrationChip(calibrated: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .background(if (calibrated) Color(0x1FE8B44A) else Color(0x14FFFFFF), RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+    ) {
+        Text(
+            if (calibrated) "已校准" else "校准",
+            color = if (calibrated) Accent else Dim,
+            fontSize = 10.sp,
+        )
     }
 }
 
@@ -468,19 +499,18 @@ private fun zoneGray(zone: Int): Color {
 @Composable
 private fun ZoneBar(
     points: List<MeterPoint>,
+    zones: List<Float>,
     selectedId: Int?,
-    zoneOf: (Double) -> Double,
     modifier: Modifier = Modifier,
 ) {
     val measurer = rememberTextMeasurer()
-    Canvas(modifier.height(ZONE_BAR_H).padding(horizontal = BAR_PAD, vertical = 8.dp)) {
+    Canvas(modifier.height(ZONE_BAR_H).padding(horizontal = BAR_PAD, vertical = 6.dp)) {
         val w = size.width
         val h = size.height
         val cellW = w / 11f
-        val barTop = h * 0.30f
-        val barH = h * 0.42f
+        val barTop = h * 0.28f
+        val barH = h * 0.46f
 
-        // 11 格线框
         for (i in 0..10) {
             val left = cellW * i
             drawRect(zoneGray(i), topLeft = Offset(left, barTop), size = Size(cellW, barH))
@@ -493,38 +523,39 @@ private fun ZoneBar(
             val layout = measurer.measure(
                 ROMAN[i],
                 TextStyle(
-                    fontSize = 13.sp,
-                    color = if (i <= 2 || i >= 9) Color(0xFFE8B44A) else Color(0xFFF2F3F5),
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = if (i <= 2 || i >= 9) Color(0xE6E8B44A) else Color(0xE6F2F3F5),
+                    fontWeight = FontWeight.Medium,
                 ),
             )
             drawText(
                 layout,
-                topLeft = Offset(left + cellW / 2f - layout.size.width / 2f, barTop + barH + 3f),
+                topLeft = Offset(left + cellW / 2f - layout.size.width / 2f, barTop + barH + 2f),
             )
         }
 
-        // 顶部游标：只画被选中的测光点，三角形落在格子内部的顶部
-        points.forEach { p ->
-            val zone = zoneOf(p.stops ?: 0.0).coerceIn(0.0, 10.0).toFloat()
+        points.forEachIndexed { i, p ->
+            val zone = zones.getOrElse(i) { 5f }
             val x = cellW * zone + cellW / 2f
             val selected = p.id == selectedId
-            val color = if (selected) Accent else Color(0xE6FFFFFF)
+            val color = if (selected) Accent else Color(0xD9FFFFFF)
             val base = cellW * 2f / 3f
-            val triH = (cellW * 0.55f).coerceIn(7f, 16f)
-            val tri = Path().apply {
-                moveTo(x - base / 2f, barTop + 1f)
-                lineTo(x + base / 2f, barTop + 1f)
-                lineTo(x, barTop + 1f + triH)
-                close()
+            val triH = (cellW * 0.5f).coerceIn(6f, 15f)
+            drawPath(
+                Path().apply {
+                    moveTo(x - base / 2f, barTop + 1f)
+                    lineTo(x + base / 2f, barTop + 1f)
+                    lineTo(x, barTop + 1f + triH)
+                    close()
+                },
+                color,
+            )
+            if (selected) {
+                drawLine(color, Offset(x, barTop - 14f), Offset(x, barTop + 1f), strokeWidth = 1.5f)
             }
-            drawPath(tri, color)
         }
     }
 }
-
-/** 分区条的罗马数字标注。 */
-private val ROMAN = arrayOf("0", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
 
 @Composable
 private fun ParamBar(
@@ -580,14 +611,14 @@ private fun CompBar(comp: Float, onStep: (Int) -> Unit, onReset: () -> Unit) {
     val stepPx = with(LocalDensity.current) { 26.dp.toPx() }
     var acc by remember { mutableStateOf(0f) }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("曝光补偿", color = Dim, fontSize = 11.sp)
-        Spacer(Modifier.width(10.dp))
+        Text("曝光补偿", color = Dim, fontSize = 10.sp)
+        Spacer(Modifier.width(8.dp))
         Box(
-            Modifier.height(30.dp)
-                .background(Color(0xFF15171B), RoundedCornerShape(8.dp))
+            Modifier.height(26.dp)
+                .background(if (abs(comp) > 0.01f) Color(0x1FE8B44A) else Color(0x12FFFFFF), RoundedCornerShape(7.dp))
                 .clickable { onReset() }
                 .pointerInput(Unit) {
                     detectVerticalDragGestures(
@@ -601,7 +632,7 @@ private fun CompBar(comp: Float, onStep: (Int) -> Unit, onReset: () -> Unit) {
                         }
                     }
                 }
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 10.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -611,11 +642,11 @@ private fun CompBar(comp: Float, onStep: (Int) -> Unit, onReset: () -> Unit) {
                     else -> String.format("%.1f", comp)
                 },
                 color = if (abs(comp) > 0.01f) Accent else Dim,
-                fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                fontSize = 12.sp, fontWeight = FontWeight.Medium,
             )
         }
         Spacer(Modifier.width(8.dp))
-        Text("上滑加曝 · 点按归零 · 范围 ±1", color = Dim, fontSize = 9.sp)
+        Text("上下滑调整 · 点按归零", color = Dim, fontSize = 9.sp)
     }
 }
 
@@ -778,10 +809,18 @@ private fun StatusLine(
             base + recip + ei + pts + cmp + cal
         }
     }
-    Text(
-        text, color = Dim, fontSize = 12.sp,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-    )
+    androidx.compose.animation.AnimatedContent(
+        targetState = text,
+        transitionSpec = {
+            (androidx.compose.animation.fadeIn(tween(160)) +
+                androidx.compose.animation.slideInVertically(tween(160)) { it / 3 })
+                .togetherWith(androidx.compose.animation.fadeOut(tween(120)))
+        },
+        label = "status",
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp),
+    ) { t ->
+        Text(t, color = Dim, fontSize = 12.sp)
+    }
 }
 
 private fun stepIso(current: Int, dir: Int): Int {
