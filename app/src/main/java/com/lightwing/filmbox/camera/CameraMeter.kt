@@ -180,6 +180,15 @@ class CameraMeter(
 
     @Volatile private var lastZoneOffsets: List<Double>? = null
 
+    /** 缩略亮度图：供 UI 任意取点（区域测光点用得上）。 */
+    @Volatile private var lumaGrid: DoubleArray? = null
+    @Volatile private var frameMean: Double = 0.0
+
+    companion object {
+        const val GRID_W = 48
+        const val GRID_H = 36
+    }
+
     /** 3×3 区域亮度 → 相对平均的档数。相对值不需要标定。 */
     private fun analyseFrame(img: android.media.Image) {
         val plane = img.planes[0]
@@ -189,36 +198,80 @@ class CameraMeter(
         val w = img.width
         val h = img.height
         if (buf.remaining() < rowStride * h) return
-        val cells = DoubleArray(9)
-        val counts = IntArray(9)
         val bytes = ByteArray(buf.remaining())
         buf.get(bytes)
 
+        val grid = DoubleArray(GRID_W * GRID_H)
+        val counts = IntArray(GRID_W * GRID_H)
         var y = 0
         while (y < h) {
             val row = y * rowStride
+            val gy = (y * GRID_H) / h
             var x = 0
             while (x < w) {
                 val idx = row + x * pixelStride
                 if (idx < bytes.size) {
                     val v = bytes[idx].toInt() and 0xFF
-                    val cx = (x * 3) / w
-                    val cy = (y * 3) / h
-                    val cell = cy * 3 + cx
-                    // Y' → 近似线性光
-                    cells[cell] += Math.pow(v / 255.0, 2.2)
+                    val gx = (x * GRID_W) / w
+                    val cell = gy * GRID_W + gx
+                    grid[cell] += Math.pow(v / 255.0, 2.2) // Y' → 近似线性光
                     counts[cell]++
                 }
-                x += 4
+                x += 3
             }
-            y += 4
+            y += 3
         }
+        var sum = 0.0
+        var n = 0
+        for (i in grid.indices) {
+            if (counts[i] > 0) {
+                grid[i] /= counts[i]
+                sum += grid[i]
+                n++
+            }
+        }
+        if (n == 0) return
+        frameMean = sum / n
+        lumaGrid = grid
+        lastZoneOffsets = zoneCells(grid)
+    }
 
-        val means = DoubleArray(9) { if (counts[it] > 0) cells[it] / counts[it] else 0.0 }
-        val avg = means.filter { it > 0 }.average().takeIf { !it.isNaN() && it > 0 } ?: return
-        lastZoneOffsets = means.map { m ->
-            if (m <= 1e-6) -6.0 else (log2(m / avg)).coerceIn(-8.0, 8.0)
+    /** 3×3 聚合，给区域条用。 */
+    private fun zoneCells(grid: DoubleArray): List<Double> {
+        val out = DoubleArray(9)
+        val cnt = IntArray(9)
+        for (gy in 0 until GRID_H) for (gx in 0 until GRID_W) {
+            val c = (gy * 3 / GRID_H) * 3 + (gx * 3 / GRID_W)
+            out[c] += grid[gy * GRID_W + gx]
+            cnt[c]++
         }
+        val mean = frameMean.takeIf { it > 0 } ?: return emptyList()
+        return out.mapIndexed { i, v ->
+            val m = if (cnt[i] > 0) v / cnt[i] else 0.0
+            if (m <= 1e-6) -6.0 else (log2(m / mean)).coerceIn(-8.0, 8.0)
+        }
+    }
+
+    /** 取画面归一化点的相对档数（正 = 比全画面均值亮）。 */
+    fun sampleRelativeStops(nx: Float, ny: Float): Double? {
+        val grid = lumaGrid ?: return null
+        val mean = frameMean
+        if (mean <= 1e-9) return null
+        val cx = (nx * GRID_W).toInt().coerceIn(0, GRID_W - 1)
+        val cy = (ny * GRID_H).toInt().coerceIn(0, GRID_H - 1)
+        var sum = 0.0
+        var n = 0
+        for (dy in -1..1) for (dx in -1..1) {
+            val x = cx + dx
+            val y = cy + dy
+            if (x in 0 until GRID_W && y in 0 until GRID_H) {
+                sum += grid[y * GRID_W + x]
+                n++
+            }
+        }
+        if (n == 0) return null
+        val v = sum / n
+        return if (v <= 1e-6) -6.0 else log2(v / mean).coerceIn(-8.0, 8.0)
     }
 
     /** 点测：把 AE 区域收缩到画面某点，radius 为归一化半径。 */
