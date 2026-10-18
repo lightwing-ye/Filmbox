@@ -91,6 +91,30 @@ fun main() {
     check("HP5+ 8s", 15.2422, FilmCatalog.byId("ilford_hp5")!!.reciprocity.correct(8.0))
     check("Acros 100s 不补偿", 100.0, FilmCatalog.byId("fuji_acros2")!!.reciprocity.correct(100.0))
 
+    // 13. 求解器：不锁 → 程序线；锁单参数 → 解另一个
+    val free = MeterSolver.solve(12.0, 100, emptySet(), 8.0, 1 / 125.0)
+    check("不锁 光圈", 8.0, free.aperture)
+    check("不锁 快门", 1 / 60.0, free.shutterSec)
+    val lockA = MeterSolver.solve(12.0, 100, setOf(Param.APERTURE), 8.0, 1 / 125.0)
+    check("锁光圈 f/8 → 快门", 1 / 60.0, lockA.shutterSec)
+    val lockT = MeterSolver.solve(12.0, 100, setOf(Param.SHUTTER), 8.0, 1 / 125.0)
+    check("锁快门 1/125 → 光圈", 5.6, lockT.aperture)
+    val both = MeterSolver.solve(12.0, 100, setOf(Param.APERTURE, Param.SHUTTER, Param.ISO), 8.0, 1 / 125.0)
+    check("全锁：偏差 +0.97 档", 0.9658, both.errorStops)
+    val ei = MeterSolver.solve(12.0, 100, setOf(Param.APERTURE, Param.SHUTTER), 8.0, 1 / 125.0)
+    val eiOk = abs(ei.iso - 195) <= 1
+    if (!eiOk) failures++
+    println("${if (eiOk) "PASS" else "FAIL"}  全锁光圈快门、ISO 未锁 → 建议 EI ${ei.iso}")
+    // 14. 求解器 + 互易律：EV2 用 HP5，补偿后仍超上限
+    val nightSolution = MeterSolver.solve(2.0, 400, setOf(Param.APERTURE), 8.0, 1 / 125.0,
+        FilmCatalog.byId("ilford_hp5"))
+    check("EV2 HP5 指示 4s → 补偿", 6.0483, nightSolution.reciprocitySec ?: 0.0, tol = 0.2)
+    val hopeless = MeterSolver.solve(0.0, 400, setOf(Param.APERTURE), 8.0, 1 / 125.0,
+        FilmCatalog.byId("ilford_hp5"))
+    val over = hopeless.reciprocitySec == null
+    if (!over) failures++
+    println("${if (over) "PASS" else "FAIL"}  EV0 + HP5 → 补偿超机身上限（指示 ${hopeless.shutterSec}s）")
+
     println("\n${if (failures == 0) "ALL PASS" else "$failures FAILURE(S)"}")
     if (failures != 0) kotlin.system.exitProcess(1)
 }
