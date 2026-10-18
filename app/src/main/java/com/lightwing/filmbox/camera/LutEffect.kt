@@ -2,9 +2,9 @@ package com.lightwing.filmbox.camera
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.ImageShader
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
+import android.graphics.BitmapShader
 import android.graphics.Shader
 import android.os.Build
 import android.view.TextureView
@@ -53,7 +53,7 @@ object LutEffect {
     private fun build(context: Context, asset: String): RenderEffect {
         val (size, bitmap) = loadCube(context, asset)
         val shader = RuntimeShader(AGSL)
-        shader.setInputShader("lut", ImageShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
+        shader.setInputShader("lut", BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP))
         shader.setFloatUniform("lutSize", size.toFloat())
         return RenderEffect.createRuntimeShaderEffect(shader, "input")
     }
