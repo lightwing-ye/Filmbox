@@ -1,0 +1,257 @@
+package com.lightwing.filmbox.camera
+
+import android.content.Context
+import android.graphics.ImageFormat
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import android.media.ImageReader
+import android.os.Handler
+import android.os.HandlerThread
+import android.util.Log
+import android.util.Size
+import android.view.Surface
+import android.view.SurfaceHolder
+import kotlin.math.log2
+
+/** 一次测光读数。EV 由 AE 反推，区域分布来自同一帧的亮度分析。 */
+data class MeterReading(
+    val ev100: Double,
+    val iso: Int,
+    val shutterSec: Double,
+    val aperture: Double,
+    val converged: Boolean,
+    /** 3×3 区域相对画面平均的档数（正 = 更亮），null 表示本帧未算。 */
+    val zoneOffsets: List<Double>? = null,
+)
+
+/**
+ * 用 Camera2 当测光表。
+ *
+ * 精度路线遵循规划 §2 的引擎 A：读 AE 收敛后的 (ISO, 曝光时间) 反推 EV100，
+ * 再按 §2 的校准偏移修正。区域分布是相对值，因此不依赖标定即可用。
+ */
+class CameraMeter(
+    private val context: Context,
+    private val onReading: (MeterReading) -> Unit,
+    private val onError: (String) -> Unit,
+) {
+    private val thread = HandlerThread("camera-meter").apply { start() }
+    private val handler = Handler(thread.looper)
+    private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+    private var device: CameraDevice? = null
+    private var session: CameraCaptureSession? = null
+    private var reader: ImageReader? = null
+    private var previewSurface: Surface? = null
+
+    private var cameraId: String = ""
+    private var aperture = 1.8
+    private var sensorWidth = 1
+    private var sensorHeight = 1
+
+    @Volatile private var lastEv: Double? = null
+    @Volatile private var lastIso = 100
+    @Volatile private var lastShutter = 1 / 60.0
+
+    fun start(holder: SurfaceHolder) {
+        // 选后置、物理尺寸最大的那颗（避免误用超广角/长焦）
+        val (id, chars) = pickMainCamera()
+        cameraId = id
+        aperture = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull() ?: 1.8
+        val size = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: Size(4000, 3000)
+        sensorWidth = size.width
+        sensorHeight = size.height
+
+        holder.setFixedSize(0, 0)
+        previewSurface = holder.surface
+        openCamera(id)
+    }
+
+    private fun pickMainCamera(): Pair<String, CameraCharacteristics> {
+        var best: Pair<String, CameraCharacteristics>? = null
+        var bestArea = 0L
+        for (id in manager.cameraIdList) {
+            val c = manager.getCameraCharacteristics(id)
+            if (c.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
+            val sz = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: continue
+            val area = sz.width.toLong() * sz.height
+            if (area > bestArea) {
+                bestArea = area
+                best = id to c
+            }
+        }
+        return best ?: throw IllegalStateException("没有可用的后置相机")
+    }
+
+    private fun openCamera(id: String) {
+        try {
+            @Suppress("MissingPermission")
+            manager.openCamera(id, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    device = camera
+                    createSession()
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    device = null
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                    device = null
+                    onError("相机打开失败: $error")
+                }
+            }, handler)
+        } catch (e: SecurityException) {
+            onError("缺少相机权限")
+        }
+    }
+
+    private fun createSession() {
+        val cam = device ?: return
+        val surface = previewSurface ?: return
+        val yuvSize = Size(640, 480)
+        reader?.close()
+        reader = ImageReader.newInstance(yuvSize.width, yuvSize.height, ImageFormat.YUV_420_888, 2).also { r ->
+            r.setOnImageAvailableListener({ ir ->
+                ir.acquireLatestImage()?.use { img -> analyseFrame(img) }
+            }, handler)
+        }
+
+        val request = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            addTarget(surface)
+            addTarget(reader!!.surface)
+            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        }.build()
+
+        cam.createCaptureSession(
+            listOf(surface, reader!!.surface),
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) {
+                    session = s
+                    s.setRepeatingRequest(request, resultCallback, handler)
+                }
+
+                override fun onConfigureFailed(s: CameraCaptureSession) {
+                    onError("相机会话配置失败")
+                }
+            },
+            handler,
+        )
+    }
+
+    private val resultCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return
+            val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
+            if (exposureNs <= 0 || iso <= 0) return
+
+            val t = exposureNs / 1e9
+            // EV100 = log2(N² / t) − log2(ISO / 100)
+            val ev = log2(aperture * aperture / t) - log2(iso / 100.0)
+            lastEv = ev
+            lastIso = iso
+            lastShutter = t
+            val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+            onReading(
+                MeterReading(
+                    ev100 = ev,
+                    iso = iso,
+                    shutterSec = t,
+                    aperture = aperture,
+                    converged = aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED,
+                    zoneOffsets = lastZoneOffsets,
+                ),
+            )
+        }
+    }
+
+    @Volatile private var lastZoneOffsets: List<Double>? = null
+
+    /** 3×3 区域亮度 → 相对平均的档数。相对值不需要标定。 */
+    private fun analyseFrame(img: android.media.Image) {
+        val plane = img.planes[0]
+        val buf = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val w = img.width
+        val h = img.height
+        if (buf.remaining() < rowStride * h) return
+        val cells = DoubleArray(9)
+        val counts = IntArray(9)
+        val bytes = ByteArray(buf.remaining())
+        buf.get(bytes)
+
+        var y = 0
+        while (y < h) {
+            val row = y * rowStride
+            var x = 0
+            while (x < w) {
+                val idx = row + x * pixelStride
+                if (idx < bytes.size) {
+                    val v = bytes[idx].toInt() and 0xFF
+                    val cx = (x * 3) / w
+                    val cy = (y * 3) / h
+                    val cell = cy * 3 + cx
+                    // Y' → 近似线性光
+                    cells[cell] += Math.pow(v / 255.0, 2.2)
+                    counts[cell]++
+                }
+                x += 4
+            }
+            y += 4
+        }
+
+        val means = DoubleArray(9) { if (counts[it] > 0) cells[it] / counts[it] else 0.0 }
+        val avg = means.filter { it > 0 }.average().takeIf { !it.isNaN() && it > 0 } ?: return
+        lastZoneOffsets = means.map { m ->
+            if (m <= 1e-6) -6.0 else (log2(m / avg)).coerceIn(-8.0, 8.0)
+        }
+    }
+
+    /** 点测：把 AE 区域收缩到画面某点，radius 为归一化半径。 */
+    fun setSpot(cx: Float, cy: Float, radius: Float) {
+        val s = session ?: return
+        val r = android.graphics.Rect(
+            ((cx - radius).coerceIn(0f, 1f) * sensorWidth).toInt(),
+            ((cy - radius).coerceIn(0f, 1f) * sensorHeight).toInt(),
+            ((cx + radius).coerceIn(0f, 1f) * sensorWidth).toInt(),
+            ((cy + radius).coerceIn(0f, 1f) * sensorHeight).toInt(),
+        )
+        if (r.width() < 4 || r.height() < 4) return
+        val request = device!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            previewSurface?.let { addTarget(it) }
+            reader?.let { addTarget(it.surface) }
+            set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(
+                android.hardware.camera2.params.MeteringRectangle(r, 1000),
+            ))
+        }.build()
+        s.setRepeatingRequest(request, resultCallback, handler)
+    }
+
+    fun stop() {
+        try {
+            session?.close()
+            device?.close()
+            reader?.close()
+        } catch (e: Exception) {
+            Log.w("CameraMeter", "close failed", e)
+        }
+        session = null
+        device = null
+        reader = null
+        thread.quitSafely()
+    }
+}
