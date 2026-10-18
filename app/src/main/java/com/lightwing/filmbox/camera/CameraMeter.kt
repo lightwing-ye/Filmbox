@@ -15,7 +15,6 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
 import android.view.Surface
-import android.view.SurfaceHolder
 import kotlin.math.log2
 
 /** 一次测光读数。EV 由 AE 反推，区域分布来自同一帧的亮度分析。 */
@@ -58,7 +57,8 @@ class CameraMeter(
     @Volatile private var lastIso = 100
     @Volatile private var lastShutter = 1 / 60.0
 
-    fun start(holder: SurfaceHolder) {
+    fun start(textureView: android.view.TextureView) {
+        val st = textureView.surfaceTexture ?: run { onError("取景器未就绪"); return }
         // 选后置、物理尺寸最大的那颗（避免误用超广角/长焦）
         val (id, chars) = pickMainCamera()
         cameraId = id
@@ -67,9 +67,19 @@ class CameraMeter(
         sensorWidth = size.width
         sensorHeight = size.height
 
-        holder.setFixedSize(0, 0)
-        previewSurface = holder.surface
+        val previewSize = pickPreviewSize(chars)
+        st.setDefaultBufferSize(previewSize.width, previewSize.height)
+        previewSurface = Surface(st)
         openCamera(id)
+    }
+
+    private fun pickPreviewSize(chars: CameraCharacteristics): Size {
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val sizes = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray()
+        // 4:3 优先，取不超过 1920 宽的最大档
+        return sizes.filter { it.width <= 1920 && it.height * 4 == it.width * 3 }
+            .maxByOrNull { it.width }
+            ?: sizes.maxByOrNull { it.width } ?: Size(1280, 960)
     }
 
     private fun pickMainCamera(): Pair<String, CameraCharacteristics> {

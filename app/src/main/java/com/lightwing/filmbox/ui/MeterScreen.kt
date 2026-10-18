@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.lightwing.filmbox.camera.CameraMeter
+import com.lightwing.filmbox.camera.LutEffect
 import com.lightwing.filmbox.camera.MeterReading
 import com.lightwing.filmbox.data.CalibrationStore
 import filmmeter.core.DataTier
@@ -101,6 +102,7 @@ fun MeterScreen() {
 
     var film by remember { mutableStateOf(FilmCatalog.byId("kodak_portra400") ?: FilmCatalog.films.first()) }
     var showPicker by remember { mutableStateOf(false) }
+    var previewView by remember { mutableStateOf<android.view.TextureView?>(null) }
     var showCalibration by remember { mutableStateOf(false) }
     var offset by remember { mutableStateOf(calibration.offset) }
 
@@ -143,6 +145,12 @@ fun MeterScreen() {
         }
     }
 
+    LaunchedEffect(film, previewView) {
+        previewView?.let { v ->
+            LutEffect.apply(v, LutEffect.effectFor(context, LutEffect.assetFor(film.id)))
+        }
+    }
+
     val anchorStops = points.firstOrNull { it.id == anchorId }?.stops ?: 0.0
     val zoneOf: (Double) -> Double = { stops -> anchorZone + (stops - anchorStops) + comp.toDouble() }
 
@@ -163,7 +171,7 @@ fun MeterScreen() {
             val boxW = constraints.maxWidth.toFloat()
             val boxH = constraints.maxHeight.toFloat()
 
-            CameraView(meter)
+            CameraView(meter) { previewView = it }
 
             Box(
                 Modifier.fillMaxSize().pointerInput(mode) {
@@ -394,16 +402,21 @@ private fun TopBar(
 }
 
 @Composable
-private fun CameraView(meter: CameraMeter) {
+private fun CameraView(meter: CameraMeter, onReady: (android.view.TextureView) -> Unit) {
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
-            SurfaceView(ctx).apply {
-                holder.addCallback(object : android.view.SurfaceHolder.Callback {
-                    override fun surfaceCreated(h: android.view.SurfaceHolder) = meter.start(h)
-                    override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, ht: Int) = Unit
-                    override fun surfaceDestroyed(h: android.view.SurfaceHolder) = Unit
-                })
+            android.view.TextureView(ctx).apply {
+                val tv = this
+                surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
+                        meter.start(tv)
+                        onReady(tv)
+                    }
+                    override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) = Unit
+                    override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean = true
+                    override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) = Unit
+                }
             }
         },
     )
@@ -442,15 +455,18 @@ private fun ZoneBar(
             val left = cellW * i
             drawRect(zoneGray(i), topLeft = Offset(left, barTop), size = Size(cellW, barH))
             drawRect(
-                Color(0x66FFFFFF),
-                topLeft = Offset(left, barTop),
-                size = Size(cellW, barH),
-                style = Stroke(1.2f),
+                Color(0xF2FFFFFF),
+                topLeft = Offset(left + 1f, barTop + 1f),
+                size = Size(cellW - 2f, barH - 2f),
+                style = Stroke(2.2f),
             )
-            val label = if (i == 5) "V" else i.toString()
             val layout = measurer.measure(
-                label,
-                TextStyle(fontSize = 9.sp, color = if (i == 5) Accent else Dim),
+                ROMAN[i],
+                TextStyle(
+                    fontSize = 13.sp,
+                    color = if (i <= 2 || i >= 9) Color(0xFFE8B44A) else Color(0xFFF2F3F5),
+                    fontWeight = FontWeight.SemiBold,
+                ),
             )
             drawText(
                 layout,
@@ -458,25 +474,27 @@ private fun ZoneBar(
             )
         }
 
-        // 顶部游标：只画被选中的测光点
+        // 顶部游标：只画被选中的测光点，三角形落在格子内部的顶部
         points.forEach { p ->
             val zone = zoneOf(p.stops ?: 0.0).coerceIn(0.0, 10.0).toFloat()
             val x = cellW * zone + cellW / 2f
             val selected = p.id == selectedId
-            val color = if (selected) Accent else Color(0xCCFFFFFF)
+            val color = if (selected) Accent else Color(0xE6FFFFFF)
+            val base = cellW * 2f / 3f
+            val triH = (cellW * 0.55f).coerceIn(7f, 16f)
             val tri = Path().apply {
-                moveTo(x - 7f, barTop - 12f)
-                lineTo(x + 7f, barTop - 12f)
-                lineTo(x, barTop - 1f)
+                moveTo(x - base / 2f, barTop + 1f)
+                lineTo(x + base / 2f, barTop + 1f)
+                lineTo(x, barTop + 1f + triH)
                 close()
             }
             drawPath(tri, color)
-            if (selected) {
-                drawLine(color, Offset(x, barTop - 30f), Offset(x, barTop - 13f), strokeWidth = 2f)
-            }
         }
     }
 }
+
+/** 分区条的罗马数字标注。 */
+private val ROMAN = arrayOf("0", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
 
 @Composable
 private fun ParamBar(

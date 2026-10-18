@@ -91,6 +91,9 @@ object FilmCatalog {
             "低可信：来源为论坛讨论，仅作参考"),
         Film("kodak_gold200", "Kodak", "Gold 200", 200, FilmType.COLOR_NEG,
             Reciprocity.Power(1.30), "无官方数据，幂律兜底", DataTier.APPROX),
+        Film("kodak_ultramax400", "Kodak", "Ultramax 400（全能400）", 400, FilmType.COLOR_NEG,
+            Reciprocity.Power(1.30), "无官方数据，幂律兜底", DataTier.APPROX,
+            "国内常称全能400；暖调、颗粒明显"),
 
         // ── CineStill ───────────────────────────────────────────
         Film("cinestill_50d", "CineStill", "50D", 50, FilmType.COLOR_NEG,
