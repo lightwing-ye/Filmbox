@@ -176,7 +176,7 @@ private fun ZoneBar(offsets: List<Double>?, modifier: Modifier = Modifier) {
             drawLine(Color(0x44FFFFFF), Offset(x, h - 6f), Offset(x, h), strokeWidth = 1f)
         }
         offsets?.forEachIndexed { idx, off ->
-            val zone = (5f + off).coerceIn(0f, 10f)
+            val zone = (5.0 + off).coerceIn(0.0, 10.0).toFloat()
             val x = w * zone / 10f
             drawCircle(
                 if (idx == 4) Accent else Color(0xCCFFFFFF),

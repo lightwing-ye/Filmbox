@@ -62,7 +62,7 @@ class CameraMeter(
         // 选后置、物理尺寸最大的那颗（避免误用超广角/长焦）
         val (id, chars) = pickMainCamera()
         cameraId = id
-        aperture = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull() ?: 1.8
+        aperture = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull()?.toDouble() ?: 1.8
         val size = chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE) ?: Size(4000, 3000)
         sensorWidth = size.width
         sensorHeight = size.height
