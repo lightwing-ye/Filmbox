@@ -39,8 +39,9 @@ class CameraMeter(
     private val onReading: (MeterReading) -> Unit,
     private val onError: (String) -> Unit,
 ) {
-    private val thread = HandlerThread("camera-meter").apply { start() }
-    private val handler = Handler(thread.looper)
+    private var thread: HandlerThread? = null
+    private var handler: Handler? = null
+    @Volatile private var running = false
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
     private var device: CameraDevice? = null
@@ -58,7 +59,10 @@ class CameraMeter(
     @Volatile private var lastShutter = 1 / 60.0
 
     fun start(textureView: android.view.TextureView) {
-        val st = textureView.surfaceTexture ?: run { onError("取景器未就绪"); return }
+        if (running) return
+        running = true
+        ensureThread()
+        val st = textureView.surfaceTexture ?: run { onError("取景器未就绪"); running = false; return }
         // 选后置、物理尺寸最大的那颗（避免误用超广角/长焦）
         val (id, chars) = pickMainCamera()
         cameraId = id
@@ -72,6 +76,16 @@ class CameraMeter(
         previewSurface = Surface(st)
         openCamera(id)
     }
+
+    private fun ensureThread() {
+        if (thread == null) {
+            val t = HandlerThread("camera-meter").apply { start() }
+            thread = t
+            handler = Handler(t.looper)
+        }
+    }
+
+    private val h: Handler get() = handler ?: throw IllegalStateException("camera thread 未启动")
 
     private fun pickPreviewSize(chars: CameraCharacteristics): Size {
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -117,7 +131,7 @@ class CameraMeter(
                     device = null
                     onError("相机打开失败: $error")
                 }
-            }, handler)
+            }, h)
         } catch (e: SecurityException) {
             onError("缺少相机权限")
         }
@@ -131,7 +145,7 @@ class CameraMeter(
         reader = ImageReader.newInstance(yuvSize.width, yuvSize.height, ImageFormat.YUV_420_888, 2).also { r ->
             r.setOnImageAvailableListener({ ir ->
                 ir.acquireLatestImage()?.use { img -> analyseFrame(img) }
-            }, handler)
+            }, h)
         }
 
         val request = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
@@ -147,14 +161,14 @@ class CameraMeter(
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     session = s
-                    s.setRepeatingRequest(request, resultCallback, handler)
+                    s.setRepeatingRequest(request, resultCallback, h)
                 }
 
                 override fun onConfigureFailed(s: CameraCaptureSession) {
                     onError("相机会话配置失败")
                 }
             },
-            handler,
+            h,
         )
     }
 
@@ -301,10 +315,11 @@ class CameraMeter(
                 android.hardware.camera2.params.MeteringRectangle(r, 1000),
             ))
         }.build()
-        s.setRepeatingRequest(request, resultCallback, handler)
+        s.setRepeatingRequest(request, resultCallback, h)
     }
 
     fun stop() {
+        running = false
         try {
             session?.close()
             device?.close()
@@ -315,6 +330,9 @@ class CameraMeter(
         session = null
         device = null
         reader = null
-        thread.quitSafely()
+        previewSurface = null
+        thread?.quitSafely()
+        thread = null
+        handler = null
     }
 }

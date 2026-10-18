@@ -27,15 +27,20 @@ object LutEffect {
         half4 main(float2 coord) {
             half4 src = input.eval(coord);
             float s = lutSize;
-            float3 f = clamp(float3(src.rgb), 0.0, 1.0) * (s - 1.0);
-            float3 i0 = floor(f);
-            float b1 = min(i0.z + 1.0, s - 1.0);
-            float fx = f.x + 0.5;
-            float fy = f.y + 0.5;
-            half4 c0 = lut.eval(float2(fx, i0.z * s + fy));
-            half4 c1 = lut.eval(float2(fx, b1 * s + fy));
-            half3 rgb = mix(c0.rgb, c1.rgb, half(f.z - i0.z));
-            return half4(rgb, src.a);
+            float r = clamp(float(src.r), 0.0, 1.0) * (s - 1.0);
+            float g = clamp(float(src.g), 0.0, 1.0) * (s - 1.0);
+            float b = clamp(float(src.b), 0.0, 1.0) * (s - 1.0);
+            float r0 = floor(r);
+            float g0 = floor(g);
+            float b0 = floor(b);
+            float b1 = min(b0 + 1.0, s - 1.0);
+            float x = r0 + 0.5;
+            float y = g0 + 0.5;
+            half4 c0 = lut.eval(float2(x, b0 * s + y));
+            half4 c1 = lut.eval(float2(x, b1 * s + y));
+            float t = b - b0;
+            float3 rgb = mix(float3(c0.rgb), float3(c1.rgb), t);
+            return half4(half3(rgb), src.a);
         }
     """
 
@@ -44,10 +49,21 @@ object LutEffect {
     val supported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
     /** asset 形如 "luts/kodak_portra400.cube"；null 表示清除滤镜。 */
+    /** 最近一次失败原因，UI 用来提示；成功时为 null。 */
+    @Volatile var lastError: String? = null
+        private set
+
     fun effectFor(context: Context, asset: String?): RenderEffect? {
         if (!supported || asset == null) return null
         cache[asset]?.let { return it }
-        return runCatching { build(context, asset) }.getOrNull()?.also { cache[asset] = it }
+        return runCatching { build(context, asset) }
+            .onSuccess { lastError = null }
+            .onFailure {
+                lastError = it.message ?: it::class.java.simpleName
+                android.util.Log.e("LutEffect", "build $asset failed", it)
+            }
+            .getOrNull()
+            ?.also { cache[asset] = it }
     }
 
     private fun build(context: Context, asset: String): RenderEffect {

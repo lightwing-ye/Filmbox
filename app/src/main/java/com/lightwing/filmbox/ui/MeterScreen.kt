@@ -145,10 +145,33 @@ fun MeterScreen() {
         }
     }
 
+    var lutNote by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(film, previewView) {
         previewView?.let { v ->
-            LutEffect.apply(v, LutEffect.effectFor(context, LutEffect.assetFor(film.id)))
+            val asset = LutEffect.assetFor(film.id)
+            val fx = LutEffect.effectFor(context, asset)
+            LutEffect.apply(v, fx)
+            lutNote = when {
+                asset == null -> null
+                fx == null -> "滤镜不可用：${LutEffect.lastError ?: "未知"}"
+                else -> null
+            }
         }
+    }
+
+    // 切后台停相机，回来重开（否则 TextureView 会卡死在最后一帧）
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> meter.stop()
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME ->
+                    previewView?.let { if (it.isAvailable) meter.start(it) }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
     val anchorStops = points.firstOrNull { it.id == anchorId }?.stops ?: 0.0
@@ -242,6 +265,9 @@ fun MeterScreen() {
             onAnchor = { z -> anchorZone = z; anchorId = points.lastOrNull()?.id },
         )
 
+        lutNote?.let {
+            Text(it, color = Color(0xFFE0574B), fontSize = 11.sp, modifier = Modifier.padding(horizontal = 16.dp))
+        }
         StatusLine(
             film = film,
             iso = iso,
@@ -414,7 +440,7 @@ private fun CameraView(meter: CameraMeter, onReady: (android.view.TextureView) -
                         onReady(tv)
                     }
                     override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) = Unit
-                    override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean = true
+                    override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean = false
                     override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) = Unit
                 }
             }
